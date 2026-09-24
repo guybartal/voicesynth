@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Turn your words into audio with Azure Speech. Choose a voice, shape its delivery, and download your recording.">
+  <title>VoiceSynth — Text to speech studio</title>
+  <script>
+    (() => {
+      const param = new URLSearchParams(window.location.search).get("scoutTheme");
+      const theme =
+        param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="wordmark" href="/" aria-label="VoiceSynth home">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M4 13v6m6-12v18m6-22v26m6-20v14m6-10v6"/></svg>
+      VoiceSynth
+    </a>
+    <span class="service-label">Powered by Azure Speech</span>
+  </header>
+  <main>
+    <div class="page-heading">
+      <div><h1>Give your words a voice.</h1><p>Write a script. Shape the delivery. Make it heard.</p></div>
+      <div class="connection" id="connection" role="status"><span class="status-dot"></span><span id="connection-text">Checking connection</span></div>
+    </div>
+
+    <section class="setup" id="setup" aria-labelledby="setup-title" hidden>
+      <div><h2 id="setup-title">Connect your Azure Speech resource</h2>
+        <p>Sign in with <code>az login</code> in your terminal. Set your Speech resource ID and region in <code>.env</code>, then restart the server. Your account needs the Cognitive Services Speech User role. Tokens stay on the server; no API key is used.</p>
+        <pre><code>AZURE_SPEECH_RESOURCE_ID=/subscriptions/.../resourceGroups/.../providers/Microsoft.CognitiveServices/accounts/...
+AZURE_SPEECH_REGION=your-resource-region</code></pre>
+      </div>
+      <button type="button" class="button secondary" id="reconnect">Check connection</button>
+    </section>
+    <div class="notice" id="notice" role="alert" hidden></div>
+
+    <nav class="view-switch" aria-label="Studio sections">
+      <button type="button" id="show-studio" aria-pressed="true" aria-controls="studio-view">Speech studio</button>
+      <button type="button" id="show-personal" aria-pressed="false" aria-controls="personal-view">Personal voices</button>
+    </nav>
+    <div id="studio-view">
+    <form id="studio">
+      <div class="workspace">
+        <section class="script-panel" aria-labelledby="script-title">
+          <div class="panel-heading"><h2 id="script-title">Your script</h2><button type="button" class="text-button" id="sample">Try a sample</button></div>
+          <label class="sr-only" for="text">Text to synthesize</label>
+          <textarea id="text" name="text" maxlength="3000" placeholder="Every great recording begins with a few words…" aria-describedby="script-hint count" spellcheck="true"></textarea>
+          <div class="script-footer"><span id="script-hint">Plain text. Punctuation creates natural pauses.</span><span id="count">0 / 3,000</span></div>
+        </section>
+        <aside class="voice-panel" aria-labelledby="voice-title">
+          <h2 id="voice-title">Voice &amp; delivery</h2>
+          <fieldset id="voice-controls" disabled>
+            <div class="field"><label for="voice-type">Voice source</label><select id="voice-type"><option value="prebuilt">Azure prebuilt voices</option><option value="personal">My personal voices</option></select></div>
+            <div class="field" id="language-field"><label for="language">Language</label><select id="language"><option>Connect Azure to load languages</option></select></div>
+            <div class="field"><label for="voice">Voice</label><select id="voice"><option>Connect Azure to load voices</option></select><p class="field-help" id="voice-detail">Voices available in your resource's region.</p><button type="button" class="text-button" id="manage-personal" hidden>Manage personal voices</button></div>
+            <div class="field" id="base-model-field" hidden><label for="base-model">Base model</label><select id="base-model"></select><p class="field-help">Languages are detected automatically. Personal Voice supports speed, but not pitch or speaking styles.</p></div>
+            <div class="field"><label for="style">Speaking style</label><select id="style"><option value="neutral">Neutral</option></select></div>
+            <div class="delivery-controls">
+              <div class="field"><div class="label-row"><label for="rate">Speaking speed</label><output id="rate-value" for="rate">1.00×</output></div><input id="rate" type="range" min="-50" max="50" step="5" value="0"><div class="range-ends"><span>Slower</span><span>Faster</span></div></div>
+              <div class="field"><div class="label-row"><label for="pitch">Pitch</label><output id="pitch-value" for="pitch">Natural</output></div><input id="pitch" type="range" min="-20" max="20" step="1" value="0"><div class="range-ends"><span>Lower</span><span>Higher</span></div></div>
+            </div>
+            <div class="field format-field"><label for="format">Download format</label><select id="format"><option value="mp3">MP3 · smaller file</option><option value="wav">WAV · uncompressed</option></select></div>
+          </fieldset>
+        </aside>
+      </div>
+      <div class="generate-bar">
+        <p id="generation-hint" role="status">Connect Azure to start generating.<br><span>Your text is sent to Azure only when you generate.</span></p>
+        <button class="button primary" type="submit" id="generate" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 11 7-11 7V5ZM4 5v14"/></svg><span id="generate-label">Generate speech</span></button>
+      </div>
+    </form>
+
+    <section class="recording" aria-labelledby="recording-title">
+      <div class="recording-heading"><h2 id="recording-title">Your recording</h2><span id="recording-meta">Nothing generated yet</span></div>
+      <div class="empty-recording" id="empty-recording">
+        <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M8 20v8m8-16v24m8-30v36m8-26v16m8-12v8"/></svg>
+        <p id="empty-message">A little quiet in here.</p><span id="empty-detail">Your generated audio will appear here, ready to play and download.</span>
+      </div>
+      <div class="audio-result" id="audio-result" hidden>
+        <audio id="audio" controls preload="metadata" aria-label="Generated speech"></audio>
+        <a class="button secondary" id="download" download="voicesynth.mp3">Download MP3</a>
+      </div>
+      <p class="recording-note" id="recording-note" hidden></p>
+    </section>
+    </div>
+
+    <section id="personal-view" aria-labelledby="personal-title" hidden>
+      <div class="personal-heading">
+        <div><h2 id="personal-title">A voice that sounds like you.</h2><p>Create narration for approved internal business content, with the speaker's permission.</p></div>
+        <button class="button secondary" type="button" id="refresh-personal">Refresh library</button>
+      </div>
+      <div class="personal-policy">
+        <p><strong>Internal use only.</strong> Microsoft must approve your Personal Voice use case. Obtain written permission and the speaker's recorded consent, review generated audio, and disclose synthetic narration in your demos.</p>
+        <p>Uploads are sent to Azure and retained there as consent records and voice profiles. VoiceSynth does not save recordings locally. Delete voices first, then their consent records, when no longer needed. Do not offer this upload workflow to external users.</p>
+        <div class="policy-links"><a href="https://aka.ms/customneural" target="_blank" rel="noreferrer">Request access</a><a href="https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/speech-service/text-to-speech/disclosure-voice-talent" target="_blank" rel="noreferrer">Speaker disclosure</a><a href="https://learn.microsoft.com/en-us/legal/ai-code-of-conduct" target="_blank" rel="noreferrer">Code of conduct</a></div>
+      </div>
+      <p id="personal-status" class="personal-status" role="status">Open this section to load your Azure library.</p>
+      <div id="personal-error" class="notice" role="alert" hidden></div>
+      <div class="personal-workflow">
+        <form id="consent-form" class="personal-form">
+          <h3>First, verify the speaker's consent</h3>
+          <p class="form-intro">Have the speaker read the official consent statement aloud. Names must exactly match the recording.</p>
+          <fieldset id="consent-fields" disabled>
+            <div class="field"><label for="consent-name">Consent label</label><input id="consent-name" name="displayName" type="text" maxlength="200" required placeholder="My demo narration consent"></div>
+            <div class="field"><label for="talent-name">Speaker's full name</label><input id="talent-name" name="voiceTalentName" type="text" maxlength="200" required autocomplete="name"></div>
+            <div class="field"><label for="company-name">Company / resource owner</label><input id="company-name" name="companyName" type="text" maxlength="200" required autocomplete="organization"></div>
+            <div class="field"><label for="consent-locale">Recording language</label><select id="consent-locale" name="locale"><option value="en-US">English (United States)</option></select></div>
+            <div class="consent-statement"><p id="consent-script"></p><a href="https://github.com/Azure-Samples/Cognitive-Speech-TTS/blob/master/CustomVoice/script/verbal-statement-all-locales.txt" target="_blank" rel="noreferrer">Official consent statements by language</a></div>
+            <div class="field"><label for="consent-audio">Consent recording</label><input id="consent-audio" name="audio" type="file" accept=".wav,audio/wav" required aria-describedby="consent-audio-help"><p class="field-help" id="consent-audio-help">PCM WAV, 1-90 seconds, up to 30 MB. No synthesized consent.</p><audio id="consent-preview" controls preload="metadata" aria-label="Local consent recording preview" hidden></audio></div>
+            <label class="check-label"><input type="checkbox" name="acknowledged" value="true" required><span>I have the speaker's explicit written permission, have shared the speaker disclosure, and have Microsoft approval for this internal business use.</span></label>
+            <button type="submit" class="button primary">Upload consent</button>
+          </fieldset>
+        </form>
+        <form id="personal-form" class="personal-form">
+          <h3>Then, create your personal voice</h3>
+          <p class="form-intro">Once Azure verifies consent, upload 5-90 seconds of clean, natural speech from the same person, in the same language.</p>
+          <fieldset id="personal-fields" disabled>
+            <div class="field"><label for="personal-name">Voice name</label><input id="personal-name" name="displayName" type="text" maxlength="200" required placeholder="My demo voice"></div>
+            <div class="field"><label for="verified-consent">Verified consent</label><select id="verified-consent" name="consentId" required><option value="">No verified consent yet</option></select></div>
+            <div class="field"><label for="sample-audio">Voice sample</label><input id="sample-audio" name="audio" type="file" accept=".wav,audio/wav" required aria-describedby="sample-audio-help"><p class="field-help" id="sample-audio-help">PCM WAV, 5-90 seconds, up to 30 MB. One speaker, no music or background noise.</p><audio id="sample-preview" controls preload="metadata" aria-label="Local voice sample preview" hidden></audio></div>
+            <p class="field-help">For both recordings: mono or stereo; 16, 24, or 32-bit PCM; 16, 24, 44.1, or 48 kHz. Export MP3 or other formats to PCM WAV before uploading.</p>
+            <label class="check-label"><input type="checkbox" name="acknowledged" value="true" required><span>This is the consenting speaker, and I am authorized to create this voice for the approved business use. I understand Azure usage charges may apply.</span></label>
+            <button type="submit" class="button primary">Create personal voice</button>
+          </fieldset>
+          <p id="consent-needed" class="field-help">A successfully verified consent recording is required.</p>
+        </form>
+      </div>
+      <section class="personal-library" aria-labelledby="library-title">
+        <h3 id="library-title">Your Azure library</h3>
+        <p class="field-help">Saved in the voicesynth-personal project on your Azure resource. Processing resumes in Azure even if you close this page.</p>
+        <h4>Personal voices</h4><div id="personal-list"><p class="field-help">No library loaded yet.</p></div>
+        <h4>Consent records</h4><div id="consent-list"><p class="field-help">No library loaded yet.</p></div>
+      </section>
+    </section>
+    <footer class="page-footer"><span>Text to speech, without the extra noise.</span><a href="https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-text-to-speech" target="_blank" rel="noreferrer">Azure Speech documentation <span aria-hidden="true">↗</span></a></footer>
+    <noscript><p class="notice">Enable JavaScript to connect to Azure and generate speech.</p></noscript>
+  </main>
+</body>
+</html>
