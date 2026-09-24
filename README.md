@@ -2,6 +2,105 @@
 
 A local text-to-speech studio using your existing Azure Speech resource. Enter a script, choose a voice and speaking style, adjust speed and pitch, then play or download MP3 or WAV audio.
 
+## Azure prerequisites and deployment
+
+Deploy an **Azure AI Speech** resource, ARM type `Microsoft.CognitiveServices/accounts` with **kind `SpeechServices`**. You do not need an Azure OpenAI model deployment, a Foundry project, or a Custom Speech recognition model. The app and MCP server run locally; only Speech is hosted in Azure.
+
+The template below uses the paid **Standard S0** tier. Speech usage incurs Azure charges; review [Speech pricing](https://azure.microsoft.com/pricing/details/cognitive-services/speech-services/) and your subscription's quotas before deployment. Choose a [supported Speech region](https://learn.microsoft.com/azure/ai-services/speech-service/regions), such as `eastus2`. Personal Voice additionally requires Microsoft approval for the intended use and regional availability; deploying S0 or assigning a role does not grant that approval.
+
+### Which role to assign
+
+Assign the role to the **Microsoft Entra user who signs in with `az login`**, at the **Speech resource scope**, not to the local Node process:
+
+| Usage | Role |
+| --- | --- |
+| Generate speech using prebuilt voices | **Cognitive Services Speech User** (least-privilege default) |
+| Manage Personal Voice projects, consent recordings, and profiles through this app | **Cognitive Services Speech Contributor** |
+
+Speech Contributor includes Speech User capabilities; you do not need both. Subscription **Owner** or **Contributor** alone is not a replacement for Speech data-plane permissions.
+
+The administrator deploying the resource needs resource creation/deployment permissions, such as **Contributor**, and permission to create role assignments, such as **Role Based Access Control Administrator** or **User Access Administrator** at an appropriate scope. **Owner** normally covers both, subject to organizational restrictions. The runtime user does not need these administrative roles.
+
+### Option A: Azure portal or an existing resource
+
+1. In the Azure portal, create an **Azure AI Speech / Speech** resource. Select your subscription, resource group, supported region, unique name, and **Standard S0** pricing tier. If you already have a Speech resource, reuse it instead.
+2. Open the resource's **Access control (IAM)**, select **Add role assignment**, choose the Speech role above, and select the user who will run the app.
+3. Copy the resource's full **Resource ID** from **Properties** and its region into `.env`, as shown in [Run](#run). No API key is required.
+4. For Personal Voice, configure the same resource's **custom domain** and copy its HTTPS endpoint into `AZURE_SPEECH_ENDPOINT`. Creating a custom subdomain is **irreversible**. Skip this step for prebuilt voices if you only use the app's regional REST synthesis flow.
+
+An administrator can also assign the runtime role with Azure CLI. Replace the placeholders; these commands modify IAM:
+
+```sh
+az login
+SUBSCRIPTION_ID="<subscription-id>"
+RESOURCE_GROUP="<existing-resource-group>"
+SPEECH_NAME="<existing-speech-resource-name>"
+USER_OBJECT_ID="<runtime-user-entra-object-id>"
+
+RESOURCE_ID=$(az cognitiveservices account show \
+  --subscription "$SUBSCRIPTION_ID" \
+  --resource-group "$RESOURCE_GROUP" --name "$SPEECH_NAME" \
+  --query id --output tsv)
+
+az role assignment create \
+  --subscription "$SUBSCRIPTION_ID" \
+  --assignee-object-id "$USER_OBJECT_ID" --assignee-principal-type User \
+  --role "Cognitive Services Speech User" --scope "$RESOURCE_ID"
+```
+
+Use `Cognitive Services Speech Contributor` instead when the user needs Personal Voice management. To look up your own user object ID, run `az ad signed-in-user show --query id --output tsv`. If an administrator deploys on behalf of someone else, supply that other user's object ID from the subscription's Entra tenant. For guest accounts, use the guest object ID in that tenant. Role changes can take several minutes to propagate.
+
+### Option B: Deploy with Bicep
+
+[`infra/main.bicep`](infra/main.bicep) creates a **new** S0 Speech resource and assigns one user the selected Speech role. It also configures a custom subdomain and disables API-key authentication (`disableLocalAuth: true`). Its default name is deterministic for the subscription/resource group; you can override `speechName` with a globally available lowercase name.
+
+The resource is **publicly reachable but requires Entra authentication**, so your local app can call Azure. This template does not provision private endpoints, a VNet, storage, or application hosting. If your organization requires private networking, adapt the deployment and ensure this Mac or PC can reach the private endpoint. Do not apply this template to an existing production account without reviewing its changes: it configures network access and disables keys, which could affect other clients.
+
+Run these **Bash** commands from the cloned repository. Set the subscription and runtime user deliberately:
+
+```sh
+az login
+az bicep version
+# If Bicep is not installed:
+# az bicep install
+
+SUBSCRIPTION_ID="<subscription-id>"
+RESOURCE_GROUP="rg-voicesynth"
+LOCATION="eastus2"
+USER_OBJECT_ID=$(az ad signed-in-user show --query id --output tsv)
+SPEECH_ROLE="User"
+# Use SPEECH_ROLE="Contributor" for Personal Voice management.
+
+az provider register --namespace Microsoft.CognitiveServices \
+  --subscription "$SUBSCRIPTION_ID" --wait
+
+az group create --subscription "$SUBSCRIPTION_ID" \
+  --name "$RESOURCE_GROUP" --location "$LOCATION"
+
+az deployment group what-if \
+  --subscription "$SUBSCRIPTION_ID" --resource-group "$RESOURCE_GROUP" \
+  --template-file infra/main.bicep \
+  --parameters location="$LOCATION" userObjectId="$USER_OBJECT_ID" speechRole="$SPEECH_ROLE"
+
+# Review the preview before creating the paid resource and assigning the role.
+az deployment group create \
+  --subscription "$SUBSCRIPTION_ID" --resource-group "$RESOURCE_GROUP" \
+  --name voicesynth --template-file infra/main.bicep \
+  --parameters location="$LOCATION" userObjectId="$USER_OBJECT_ID" speechRole="$SPEECH_ROLE"
+
+az deployment group show \
+  --subscription "$SUBSCRIPTION_ID" --resource-group "$RESOURCE_GROUP" \
+  --name voicesynth --query properties.outputs --output json
+```
+
+Provider registration requires subscription-level permission; ask your administrator if it is not already registered and you cannot register it. If you override the resource name, add `speechName="<unique-name>"` to **both** deployment commands. The custom subdomain cannot be renamed after creation.
+
+Copy deployment output `resourceId.value` into `AZURE_SPEECH_RESOURCE_ID`, `region.value` into `AZURE_SPEECH_REGION`, and `endpoint.value` into `AZURE_SPEECH_ENDPOINT`. Outputs contain no credentials. Do not overwrite an existing `.env` when applying these values.
+
+Re-running with the same parameters reuses the same resource and role-assignment IDs. Incremental deployments **do not revoke old role assignments** when you change `userObjectId` or `speechRole`; review and remove obsolete grants separately through IAM. This template supports user principals only, matching the app's interactive CLI-login workflow.
+
+After propagation, sign in as the runtime user, restart VoiceSynth, and use **Check connection** (or MCP `list_voices`). MCP `get_status` only checks configuration, not Azure access. A Personal Voice 403 can persist even when prebuilt synthesis works: verify feature/use-case approval separately.
+
 ## Run
 
 Requires **Node.js 22.9 or later** and **Azure CLI 2.54 or later** on the server's PATH. Install the MCP SDK dependencies (the browser app itself still uses only Node's built-in modules):
